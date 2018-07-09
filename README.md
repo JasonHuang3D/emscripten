@@ -27,3 +27,10 @@ License allows Emscripten's code to be integrated upstream into
 LLVM, which uses that license, should the opportunity arise.
 
 See `LICENSE` for the full content of the licenses.
+
+This fork
+---------
+
+This fork will keep up to date with original emscripten incoming branch. The purposes of this fork are:
+* Contributing and Maintaining to Embind.
+* Adding new programming languages supported for wasm based on extended binaryen compiler.(this is considering)
