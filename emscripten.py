@@ -680,12 +680,19 @@ def include_asm_consts(pre, forwarded_json, metadata):
     # In proxied function calls, positive integers 1, 2, 3, ... denote pointers to regular C compiled functions. Negative integers -1, -2, -3, ... denote indices to EM_ASM() blocks, so remap the EM_ASM() indices from 0, 1, 2, ... over to the negative integers starting at -1.
     proxy_args = '-1 - ' + ','.join(all_args)
 
-    if proxy_function: proxy_to_main_thread = '  if (ENVIRONMENT_IS_PTHREAD) { ' + proxy_debug_print(call_type) + 'return ' + proxy_function + '(' + proxy_args + '); } \n'
-    else: proxy_to_main_thread = ''
+    pre_asm_const = ''
+
+    if proxy_function:
+      pre_asm_const += '  if (ENVIRONMENT_IS_PTHREAD) { ' + proxy_debug_print(call_type) + 'return ' + proxy_function + '(' + proxy_args + '); } \n'
+
+    if shared.Settings.EMTERPRETIFY_ASYNC and shared.Settings.ASSERTIONS:
+      # we cannot have an EM_ASM on the stack when saving/loading
+      pre_asm_const += "  assert(typeof EmterpreterAsync !== 'object' || EmterpreterAsync.state !== 2, 'cannot have an EM_ASM on the stack when emterpreter pauses/resumes - the JS is not emterpreted, so we would end up running it again from the start');\n"
+
     asm_const_funcs.append(r'''
 function _emscripten_asm_const_%s(%s) {
 %s  return ASM_CONSTS[code](%s);
-}''' % (call_type + asstr(sig), ', '.join(all_args), proxy_to_main_thread, ', '.join(args)))
+}''' % (call_type + asstr(sig), ', '.join(all_args), pre_asm_const, ', '.join(args)))
 
   asm_consts_text = '\nvar ASM_CONSTS = [' + ',\n '.join(asm_consts) + '];\n'
   asm_funcs_text = '\n'.join(asm_const_funcs) + '\n'
@@ -1282,7 +1289,7 @@ def create_exports(exported_implemented_functions, in_table, function_table_data
       exports.append(quote(str(k)) + ': ' + str(v))
   # shared wasm emulated function pointer mode requires us to know the function pointer for
   # each function. export fp$func => function pointer for func
-  if shared.Settings.WASM and shared.Settings.RELOCATABLE and shared.Settings.EMULATED_FUNCTION_POINTERS:
+  if shared.Settings.WASM and shared.Settings.RELOCATABLE and shared.Settings.EMULATE_FUNCTION_POINTER_CASTS:
     for k, v in metadata['functionPointers'].items():
       exports.append(quote('fp$' + str(k)) + ': ' + str(v))
   return '{ ' + ', '.join(exports) + ' }'
@@ -1734,6 +1741,8 @@ def emscript_wasm_backend(infile, outfile, libraries, compiler_engine,
   #   * We may also run some Binaryen passes here.
 
   metadata = finalize_wasm(temp_files, infile, outfile, DEBUG)
+  if shared.Settings.SIDE_MODULE:
+    return
 
   # optimize syscalls
 
@@ -1859,7 +1868,6 @@ def finalize_wasm(temp_files, infile, outfile, DEBUG):
 
 
 def create_metadata_wasm(metadata_raw, DEBUG):
-  if DEBUG: logging.debug("Metadata raw: " + metadata_raw)
   metadata = load_metadata(metadata_raw)
   if DEBUG: logging.debug("Metadata parsed: " + pprint.pformat(metadata))
   return metadata

@@ -395,6 +395,10 @@ var LibrarySDL = {
         alpha: (SDL.glAttributes[3 /*SDL_GL_ALPHA_SIZE*/] > 0)
       };
 
+#if OFFSCREEN_FRAMEBUFFER
+      // TODO: Make SDL explicitly aware of whether it is being proxied or not, and set these to true only when proxying is being performed.
+      GL.enableOffscreenFramebufferAttributes(webGLContextAttributes);
+#endif
       var ctx = Browser.createContext(canvas, is_SDL_OPENGL, usePageCanvas, webGLContextAttributes);
 
       SDL.surfaces[surf] = {
@@ -1779,12 +1783,14 @@ var LibrarySDL = {
   SDL_WarpMouse__sig: 'vii',
   SDL_WarpMouse: function(x, y) {
     return; // TODO: implement this in a non-buggy way. Need to keep relative mouse movements correct after calling this
+    /*
     var rect = Module["canvas"].getBoundingClientRect();
     SDL.events.push({
       type: 'mousemove',
       pageX: x + (window.scrollX + rect.left),
       pageY: y + (window.scrollY + rect.top)
     });
+    */
   },
 
   SDL_ShowCursor__proxy: 'sync',
