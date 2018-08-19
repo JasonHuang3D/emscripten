@@ -3,7 +3,7 @@ defaults: &defaults
     - image: buildpack-deps:xenial
       environment:
         LANG: C.UTF-8
-        EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS: 1
+        EMTEST_DETECT_TEMPFILE_LEAKS: 1
 
 test-defaults: &test-defaults
   <<: *defaults
@@ -17,11 +17,11 @@ test-defaults: &test-defaults
     - run:
         name: install package dependencies
         command: |
-          apt-get update
+          apt-get update -q
           # preseed packages so that apt-get won't prompt for user input
           echo "keyboard-configuration keyboard-configuration/layoutcode string us" | debconf-set-selections
           echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections
-          apt-get install -y python3 cmake build-essential openjdk-9-jre-headless $TEST_DEPENDENCY
+          apt-get install -q -y python3 cmake build-essential openjdk-9-jre-headless $TEST_DEPENDENCY
     - run:
         name: run tests
         command: |
@@ -54,8 +54,8 @@ jobs:
       - run:
           name: install package dependencies
           command: |
-            apt-get update
-            apt-get install -y python3 cmake
+            apt-get update -q
+            apt-get install -q -y python3 cmake
       - run:
           name: install emsdk
           command: |
@@ -148,8 +148,8 @@ jobs:
       - run:
           name: install pip
           command: |
-            apt-get update
-            apt-get install -y python-pip
+            apt-get update -q
+            apt-get install -q -y python-pip
       - run: pip install flake8==3.4.1
       - run: flake8
   test-other:
@@ -174,9 +174,9 @@ jobs:
       - TEST_TARGET=browser skip:browser.test_sdl2_mouse skip:browser.test_html5_webgl_create_context skip:browser.test_webgl_offscreen_canvas_in_pthread skip:browser.test_webgl_offscreen_canvas_in_mainthread_after_pthread
       # TODO: use Firefox headless mode when https://bugzil.la/1375585 resolves
       - TEST_DEPENDENCY=dbus-x11 firefox menu openbox ttf-mscorefonts-installer xinit xserver-xorg xserver-xorg-video-dummy
-      - EMSCRIPTEN_BROWSER=firefox -profile tmp-firefox-profile/
-      - EM_LACKS_SOUND_HARDWARE=1
-      - EM_TESTRUNNER_DETECT_TEMPFILE_LEAKS=0
+      - EMTEST_BROWSER=firefox -profile tmp-firefox-profile/
+      - EMTEST_LACKS_SOUND_HARDWARE=1
+      - EMTEST_DETECT_TEMPFILE_LEAKS=0
       - DISPLAY=:0
       - GALLIUM_DRIVER=softpipe # TODO: use the default llvmpipe when it supports more extensions
   test-ab:

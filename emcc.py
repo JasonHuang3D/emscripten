@@ -66,7 +66,11 @@ ASSEMBLY_ENDINGS = ('.ll',)
 HEADER_ENDINGS = ('.h', '.hxx', '.hpp', '.hh', '.H', '.HXX', '.HPP', '.HH')
 WASM_ENDINGS = ('.wasm', '.wast')
 
-SUPPORTED_LINKER_FLAGS = ('--start-group', '-(', '--end-group', '-)')
+SUPPORTED_LINKER_FLAGS = (
+    '--start-group', '--end-group',
+    '-(', '-)',
+    '--whole-archive', '--no-whole-archive',
+    '-whole-archive', '-no-whole-archive')
 
 LIB_PREFIXES = ('', 'lib')
 
@@ -1109,9 +1113,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         newargs.append('-DSTB_IMAGE_IMPLEMENTATION')
 
       if shared.Settings.ASMFS and final_suffix in JS_CONTAINING_SUFFIXES:
-        if shared.Settings.WASM:
-          logging.error('ASMFS not yet compatible with wasm (shared.make_fetch_worker is asm.js-specific)')
-          sys.exit(1)
         input_files.append((next_arg_index, shared.path_from_root('system', 'lib', 'fetch', 'asmfs.cpp')))
         newargs.append('-D__EMSCRIPTEN_ASMFS__=1')
         next_arg_index += 1
@@ -1121,9 +1122,6 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           exit_with_error('-s ASMFS=1 requires either -s USE_PTHREADS=1 or -s USE_PTHREADS=2 to be set!')
 
       if shared.Settings.FETCH and final_suffix in JS_CONTAINING_SUFFIXES:
-        if shared.Settings.WASM:
-          logging.error('FETCH not yet compatible with wasm (shared.make_fetch_worker is asm.js-specific)')
-          sys.exit(1)
         input_files.append((next_arg_index, shared.path_from_root('system', 'lib', 'fetch', 'emscripten_fetch.cpp')))
         next_arg_index += 1
         options.js_libraries.append(shared.path_from_root('src', 'library_fetch.js'))
@@ -1302,8 +1300,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
         #  * if we also supported js mem inits we'd have 4 modes
         #  * and js mem inits are useful for avoiding a side file, but the wasm module avoids that anyhow
         if 'MEM_INIT_METHOD' in settings_changes:
-          logging.error('Mem init method selection is not supported in wasm. Memory will be embedded in the wasm binary if threads are not used, and included in a separate file if threads are used.')
-          sys.exit(1)
+          exit_with_error('MEM_INIT_METHOD is not supported in wasm. Memory will be embedded in the wasm binary if threads are not used, and included in a separate file if threads are used.')
         options.memory_init_file = True
         # async compilation requires wasm-only mode, and also not interpreting (the interpreter needs sync input)
         if shared.Settings.BINARYEN_ASYNC_COMPILATION == 1 and shared.Building.is_wasm_only() and 'interpret' not in shared.Settings.BINARYEN_METHOD:
@@ -1343,8 +1340,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
           logging.warning('output suffix .js requested, but wasm side modules are just wasm files; emitting only a .wasm, no .js')
 
         if options.separate_asm:
-          logging.error('cannot --separate-asm when emitting wasm, since not emitting asm.js')
-          sys.exit(1)
+          exit_with_error('cannot --separate-asm when emitting wasm, since not emitting asm.js')
 
       # wasm outputs are only possible with a side wasm
       if target.endswith(WASM_ENDINGS):
@@ -1654,7 +1650,7 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
       if perform_link:
         logging.debug('linking: ' + str(linker_inputs))
         # force archive contents to all be included, if just archives, or if linking shared modules
-        force_archive_contents = len([temp for i, temp in temp_files if not temp.endswith(STATICLIB_ENDINGS)]) == 0 or not shared.Building.can_build_standalone()
+        force_archive_contents = all(t.endswith(STATICLIB_ENDINGS) for _, t in temp_files) or not shared.Building.can_build_standalone()
 
         # if  EMCC_DEBUG=2  then we must link now, so the temp files are complete.
         # if using the wasm backend, we might be using vanilla LLVM, which does not allow our fastcomp deferred linking opts.
@@ -1909,6 +1905,8 @@ There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR P
 
       # Generate the fetch-worker.js script for multithreaded emscripten_fetch() support if targeting pthreads.
       if shared.Settings.FETCH and shared.Settings.USE_PTHREADS:
+        if shared.Settings.WASM:
+          exit_with_error('FETCH+USE_PTHREADS not yet compatible with wasm (shared.make_fetch_worker is asm.js-specific)')
         shared.make_fetch_worker(final, os.path.join(os.path.dirname(os.path.abspath(target)), 'fetch-worker.js'))
 
     # exit block 'memory initializer'
