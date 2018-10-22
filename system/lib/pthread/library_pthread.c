@@ -1,3 +1,10 @@
+/*
+ * Copyright 2015 The Emscripten Authors.  All rights reserved.
+ * Emscripten is available under two separate licenses, the MIT license and the
+ * University of Illinois/NCSA Open Source License.  Both these licenses can be
+ * found in the LICENSE file.
+ */
+
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <emscripten/threading.h>
@@ -503,7 +510,7 @@ int llvm_memory_barrier()
 
 int llvm_atomic_load_add_i32_p0i32(int *ptr, int delta)
 {
-	return emscripten_atomic_add_u32(ptr, delta) - delta;
+	return emscripten_atomic_add_u32(ptr, delta);
 }
 
 typedef struct main_args

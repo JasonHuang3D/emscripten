@@ -1,3 +1,8 @@
+// Copyright 2011 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 //"use strict";
 
 // Various namespace-like modules
@@ -107,8 +112,8 @@ var LibraryManager = {
       'library_html5.js'
     ];
 
-    if (!NO_FILESYSTEM) {
-      // Core filesystem libraries (always linked against, unless -s NO_FILESYSTEM=1 is specified)
+    if (FILESYSTEM) {
+      // Core filesystem libraries (always linked against, unless -s FILESYSTEM=0 is specified)
       libraries = libraries.concat([
         'library_fs.js',
         'library_memfs.js',

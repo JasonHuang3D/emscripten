@@ -1,3 +1,8 @@
+// Copyright 2015 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 var LibraryPThreadStub = {
   // ===================================================================================
   // Stub implementation for pthread.h when not compiling with pthreads support enabled.
@@ -166,6 +171,8 @@ var LibraryPThreadStub = {
 
   _pthread_cleanup_push: 'pthread_cleanup_push',
   _pthread_cleanup_pop: 'pthread_cleanup_pop',
+
+  pthread_sigmask: function() { return 0; },
 
   pthread_rwlock_init: function() { return 0; },
   pthread_rwlock_destroy: function() { return 0; },

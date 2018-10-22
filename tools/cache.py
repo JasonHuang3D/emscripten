@@ -1,3 +1,8 @@
+# Copyright 2013 The Emscripten Authors.  All rights reserved.
+# Emscripten is available under two separate licenses, the MIT license and the
+# University of Illinois/NCSA Open Source License.  Both these licenses can be
+# found in the LICENSE file.
+
 from __future__ import print_function
 from .toolchain_profiler import ToolchainProfiler
 import os.path, sys, shutil, time, logging
@@ -36,7 +41,7 @@ class Cache(object):
       else:
         dirname = os.path.join(dirname, 'wasm_bc')
     self.dirname = dirname
-    self.debug = debug
+    self.debug = 'EM_CACHE_DEBUG' in os.environ
     self.acquired_count = 0
 
   def acquire_cache_lock(self):

@@ -1,4 +1,9 @@
 #!/usr/bin/env python
+# Copyright 2018 The Emscripten Authors.  All rights reserved.
+# Emscripten is available under two separate licenses, the MIT license and the
+# University of Illinois/NCSA Open Source License.  Both these licenses can be
+# found in the LICENSE file.
+
 """Utility tools that extracts DWARF information encoded in a wasm output
 produced by the LLVM tools, and encodes it as a wasm source map. Additionally,
 it can collect original sources, change files prefixes, and strip debug
@@ -6,9 +11,10 @@ sections from a wasm file.
 """
 
 import argparse
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 import json
 import logging
+from math import floor, log
 import os
 import re
 from subprocess import Popen, PIPE
@@ -19,14 +25,49 @@ def parse_args():
   parser = argparse.ArgumentParser(prog='wasm-sourcemap.py', description=__doc__)
   parser.add_argument('wasm', help='wasm file')
   parser.add_argument('-o', '--output', help='output source map')
-  parser.add_argument('-p', '--prefix', nargs='*', help='replace source filename prefix', default=[])
-  parser.add_argument('-s', '--sources', action='store_true', help='read and embed source files')
+  parser.add_argument('-p', '--prefix', nargs='*', help='replace source debug filename prefix for source map', default=[])
+  parser.add_argument('-s', '--sources', action='store_true', help='read and embed source files from file system into source map')
+  parser.add_argument('-l', '--load-prefix', nargs='*', help='replace source debug filename prefix for reading sources from file system (see also --sources)', default=[])
   parser.add_argument('-w', nargs='?', help='set output wasm file')
   parser.add_argument('-x', '--strip', action='store_true', help='removes debug and linking sections')
   parser.add_argument('-u', '--source-map-url', nargs='?', help='specifies sourceMappingURL section contest')
   parser.add_argument('--dwarfdump', help="path to llvm-dwarfdump executable")
   parser.add_argument('--dwarfdump-output', nargs='?', help=argparse.SUPPRESS)
   return parser.parse_args()
+
+
+class Prefixes:
+  def __init__(self, args):
+    prefixes = []
+    for p in args:
+      if '=' in p:
+        prefix, replacement = p.split('=')
+        prefixes.append({'prefix': prefix, 'replacement': replacement})
+      else:
+        prefixes.append({'prefix': p, 'replacement': None})
+    self.prefixes = prefixes
+    self.cache = {}
+
+  def resolve(self, name):
+    if name in self.cache:
+      return self.cache[name]
+
+    result = name
+    for p in self.prefixes:
+      if name.startswith(p['prefix']):
+        if p['replacement'] is None:
+          result = name[len(p['prefix'])::]
+        else:
+          result = p['replacement'] + name[len(p['prefix'])::]
+        break
+    self.cache[name] = result
+    return result
+
+
+# SourceMapPrefixes contains resolver for file names that are:
+#  - "sources" is for names that output to source maps JSON
+#  - "load" is for paths that used to load source text
+SourceMapPrefixes = namedtuple('SourceMapPrefixes', 'sources, load')
 
 
 def encode_vlq(n):
@@ -101,6 +142,28 @@ def get_code_section_offset(wasm):
     pos = pos + section_size
 
 
+def remove_dead_entries(entries):
+  # Remove entries for dead functions. It is a heuristics to ignore data if the
+  # function starting address near to 0 (is equal to its size field length).
+  block_start = 0
+  cur_entry = 0
+  while cur_entry < len(entries):
+    if not entries[cur_entry]['eos']:
+      cur_entry += 1
+      continue
+    fn_start = entries[block_start]['address']
+    # Calculate the LEB encoded function size (including size field)
+    fn_size_length = floor(log(entries[cur_entry]['address'] - fn_start + 1, 128)) + 1
+    min_live_offset = 1 + fn_size_length # 1 byte is for code section entries
+    if fn_start < min_live_offset:
+      # Remove dead code debug info block.
+      del entries[block_start:cur_entry + 1]
+      cur_entry = block_start
+      continue
+    cur_entry += 1
+    block_start = cur_entry
+
+
 def read_dwarf_entries(wasm, options):
   if options.dwarfdump_output:
     output = open(options.dwarfdump_output, 'r').read()
@@ -109,7 +172,7 @@ def read_dwarf_entries(wasm, options):
     if not os.path.exists(options.dwarfdump):
       logging.error('llvm-dwarfdump not found: ' + options.dwarfdump)
       sys.exit(1)
-    process = Popen([options.dwarfdump, "-debug-line", wasm], stdout=PIPE)
+    process = Popen([options.dwarfdump, "-debug-info", "-debug-line", wasm], stdout=PIPE)
     output, err = process.communicate()
     exit_code = process.wait()
     if exit_code != 0:
@@ -120,8 +183,14 @@ def read_dwarf_entries(wasm, options):
     sys.exit(1)
 
   entries = []
-  debug_line_chunks = re.split(r"(debug_line\[0x[0-9a-f]*\])", output)
+  debug_line_chunks = re.split(r"debug_line\[(0x[0-9a-f]*)\]", output)
+  maybe_debug_info_content = debug_line_chunks[0]
   for i in range(1, len(debug_line_chunks), 2):
+    stmt_list = debug_line_chunks[i]
+    comp_dir_match = re.search(r"DW_AT_stmt_list\s+\(" + stmt_list + r"\)\s+" +
+                               r"DW_AT_comp_dir\s+\(\"([^\"]+)", maybe_debug_info_content)
+    comp_dir = comp_dir_match.group(1) if comp_dir_match is not None else ""
+
     line_chunk = debug_line_chunks[i + 1]
 
     # include_directories[  1] = "/Users/yury/Work/junk/sqlite-playground/src"
@@ -139,21 +208,33 @@ def read_dwarf_entries(wasm, options):
     # 0x0000000000000010     23      3      1   0             0  end_sequence
     # 0x0000000000000011     28      0      1   0             0  is_stmt
 
-    include_directories = {'0': ""}
+    include_directories = {'0': comp_dir}
     for dir in re.finditer(r"include_directories\[\s*(\d+)\] = \"([^\"]*)", line_chunk):
       include_directories[dir.group(1)] = dir.group(2)
 
     files = {}
     for file in re.finditer(r"file_names\[\s*(\d+)\]:\s+name: \"([^\"]*)\"\s+dir_index: (\d+)", line_chunk):
       dir = include_directories[file.group(3)]
-      file_path = (dir + '/' if dir != '' else '') + file.group(2)
+      file_path = (dir + '/' if file.group(2)[0] != '/' else '') + file.group(2)
       files[file.group(1)] = file_path
 
-    for line in re.finditer(r"\n0x([0-9a-f]+)\s+(\d+)\s+(\d+)\s+(\d+)", line_chunk):
-      entry = {'address': int(line.group(1), 16), 'line': int(line.group(2)), 'column': int(line.group(3)), 'file': files[line.group(4)]}
-      entries.append(entry)
+    for line in re.finditer(r"\n0x([0-9a-f]+)\s+(\d+)\s+(\d+)\s+(\d+)(.*?end_sequence)?", line_chunk):
+      entry = {'address': int(line.group(1), 16), 'line': int(line.group(2)), 'column': int(line.group(3)), 'file': files[line.group(4)], 'eos': line.group(5) is not None}
+      if not entry['eos']:
+        entries.append(entry)
+      else:
+        # move end of function to the last END operator
+        entry['address'] -= 1
+        if entries[-1]['address'] == entry['address']:
+          # last entry has the same address, reusing
+          entries[-1]['eos'] = True
+        else:
+          entries.append(entry)
 
-  return entries
+  remove_dead_entries(entries)
+
+  # return entries sorted by the address field
+  return sorted(entries, key=lambda entry: entry['address'])
 
 
 def build_sourcemap(entries, code_section_offset, prefixes, collect_sources):
@@ -169,32 +250,30 @@ def build_sourcemap(entries, code_section_offset, prefixes, collect_sources):
   for entry in entries:
     line = entry['line']
     column = entry['column']
-    if line == 0 or column == 0:
+    # ignore entries with line 0
+    if line == 0:
       continue
+    # start at least at column 1
+    if column == 0:
+      column = 1
     address = entry['address'] + code_section_offset
     file_name = entry['file']
-    if file_name not in sources_map:
+    source_name = prefixes.sources.resolve(file_name)
+    if source_name not in sources_map:
       source_id = len(sources)
-      sources_map[file_name] = source_id
-      source_name = file_name
-      for p in prefixes:
-        if file_name.startswith(p['prefix']):
-          if p['replacement'] is None:
-            source_name = file_name[len(p['prefix'])::]
-          else:
-            source_name = p['replacement'] + file_name[len(p['prefix'])::]
-          break
+      sources_map[source_name] = source_id
       sources.append(source_name)
       if collect_sources:
+        load_name = prefixes.load.resolve(file_name)
         try:
-          with open(file_name, 'r') as infile:
+          with open(load_name, 'r') as infile:
             source_content = infile.read()
           sources_content.append(source_content)
         except:
-          print('Failed to read source: %s' % file_name)
+          print('Failed to read source: %s' % load_name)
           sources_content.append(None)
     else:
-      source_id = sources_map[file_name]
+      source_id = sources_map[source_name]
 
     address_delta = address - last_address
     source_id_delta = source_id - last_source_id
@@ -223,13 +302,7 @@ def main():
 
   code_section_offset = get_code_section_offset(wasm)
 
-  prefixes = []
-  for p in options.prefix:
-    if '=' in p:
-      prefix, replacement = p.split('=')
-      prefixes.append({'prefix': prefix, 'replacement': replacement})
-    else:
-      prefixes.append({'prefix': p, 'replacement': None})
+  prefixes = SourceMapPrefixes(sources=Prefixes(options.prefix), load=Prefixes(options.load_prefix))
 
   logging.debug('Saving to %s' % options.output)
   map = build_sourcemap(entries, code_section_offset, prefixes, options.sources)

@@ -92,7 +92,13 @@ function ftfault() {
 // Runtime essentials
 //========================================
 
-var ABORT = 0; // whether we are quitting the application. no code should run after this. set in exit() and abort()
+// whether we are quitting the application. no code should run after this.
+// set in exit() and abort()
+var ABORT = false;
+
+// set by exit() and abort().  Passed to 'onExit' handler.
+// NOTE: This is also used as the process return code code in shell environments
+// but only when noExitRuntime is false.
 var EXITSTATUS = 0;
 
 /** @type {function(*, string=)} */
@@ -451,7 +457,10 @@ function UTF8ArrayToString(u8Array, idx) {
 
     var str = '';
     while (1) {
-      // For UTF8 byte structure, see http://en.wikipedia.org/wiki/UTF-8#Description and https://www.ietf.org/rfc/rfc2279.txt and https://tools.ietf.org/html/rfc3629
+      // For UTF8 byte structure, see:
+      // http://en.wikipedia.org/wiki/UTF-8#Description
+      // https://www.ietf.org/rfc/rfc2279.txt
+      // https://tools.ietf.org/html/rfc3629
       u0 = u8Array[idx++];
       if (!u0) return str;
       if (!(u0 & 0x80)) { str += String.fromCharCode(u0); continue; }
@@ -779,12 +788,9 @@ function demangle(func) {
   var __cxa_demangle_func = Module['___cxa_demangle'] || Module['__cxa_demangle'];
   assert(__cxa_demangle_func);
   try {
-    var s =
-#if WASM_BACKEND
-      func;
-#else
-      func.substr(1);
-#endif
+    var s = func;
+    if (s.startsWith('__Z'))
+      s = s.substr(1);
     var len = lengthBytesUTF8(s)+1;
     var buf = _malloc(len);
     stringToUTF8(s, buf, len);
@@ -821,7 +827,7 @@ function demangleAll(text) {
   return text.replace(regex,
     function(x) {
       var y = demangle(x);
-      return x === y ? x : (x + ' [' + y + ']');
+      return x === y ? x : (y + ' [' + x + ']');
     });
 }
 
@@ -962,14 +968,10 @@ function abortOnCannotGrowMemory() {
 if (!Module['reallocBuffer']) Module['reallocBuffer'] = function(size) {
   var ret;
   try {
-    if (ArrayBuffer.transfer) {
-      ret = ArrayBuffer.transfer(buffer, size);
-    } else {
-      var oldHEAP8 = HEAP8;
-      ret = new ArrayBuffer(size);
-      var temp = new Int8Array(ret);
-      temp.set(oldHEAP8);
-    }
+    var oldHEAP8 = HEAP8;
+    ret = new ArrayBuffer(size);
+    var temp = new Int8Array(ret);
+    temp.set(oldHEAP8);
   } catch(e) {
     return false;
   }
@@ -1117,7 +1119,7 @@ if (ENVIRONMENT_IS_WEB) {
   });
 }
 
-#if USE_PTHREADS == 1
+#if USE_PTHREADS
 if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
   xhr = new XMLHttpRequest();
   xhr.open('GET', 'http://localhost:8888/report_result?skipped:%20SharedArrayBuffer%20is%20not%20supported!');
@@ -1189,6 +1191,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   Module['wasmMemory'] = new WebAssembly.Memory({ 'initial': TOTAL_MEMORY / WASM_PAGE_SIZE , 'maximum': TOTAL_MEMORY / WASM_PAGE_SIZE, 'shared': true });
 #endif
   buffer = Module['wasmMemory'].buffer;
+  assert(buffer instanceof SharedArrayBuffer, 'requested a shared WebAssembly.Memory but the returned buffer is not a SharedArrayBuffer, indicating that while the browser has SharedArrayBuffer it does not have WebAssembly threads support - you may need to set a flag');
 }
 
 updateGlobalBufferViews();
@@ -1773,7 +1776,7 @@ var Math_trunc = Math.trunc;
 // A counter of dependencies for calling run(). If we need to
 // do asynchronous work before running, increment this and
 // decrement it. Incrementing must happen in a place like
-// PRE_RUN_ADDITIONS (used by emcc to add file preloading).
+// Module.preRun (used by emcc to add file preloading).
 // Note that you can add dependencies in preRun, even though
 // it happens right before run - run will be postponed until
 // the dependencies are met.
@@ -1996,7 +1999,7 @@ if (!ENVIRONMENT_IS_PTHREAD) addOnPreRun(function() { if (typeof SharedArrayBuff
 #endif
 
 #if ASSERTIONS
-#if NO_FILESYSTEM
+#if FILESYSTEM == 0
 var /* show errors on likely calls to FS when it was not included */ FS = {
   error: function() {
     abort('Filesystem support (FS) was not included. The problem is that you are using files from JS, but files were not used from C/C++, so filesystem support was not auto-included. You can force-include filesystem support with  -s FORCE_FILESYSTEM=1');
@@ -2283,7 +2286,7 @@ function integrateWasmJS() {
     function instantiateArrayBuffer(receiver) {
       getBinaryPromise().then(function(binary) {
         return WebAssembly.instantiate(binary, info);
-      }).then(receiver).catch(function(reason) {
+      }).then(receiver, function(reason) {
         err('failed to asynchronously prepare wasm: ' + reason);
         abort(reason);
       });
@@ -2294,8 +2297,7 @@ function integrateWasmJS() {
         !isDataURI(wasmBinaryFile) &&
         typeof fetch === 'function') {
       WebAssembly.instantiateStreaming(fetch(wasmBinaryFile, { credentials: 'same-origin' }), info)
-        .then(receiveInstantiatedSource)
-        .catch(function(reason) {
+        .then(receiveInstantiatedSource, function(reason) {
           // We expect the most common failure cause to be a bad MIME type for the binary,
           // in which case falling back to ArrayBuffer instantiation should work.
           err('wasm streaming compile failed: ' + reason);
@@ -2508,7 +2510,7 @@ function integrateWasmJS() {
 #endif // native-wasm
 
 #if ASSERTIONS
-    assert(exports, 'no binaryen method succeeded. consider enabling more options, like interpreting, if you want that: https://github.com/kripken/emscripten/wiki/WebAssembly#binaryen-methods');
+    assert(exports, 'no binaryen method succeeded. consider enabling more options, like interpreting, if you want that: http://kripken.github.io/emscripten-site/docs/compiling/WebAssembly.html#binaryen-methods');
 #else
     assert(exports, 'no binaryen method succeeded.');
 #endif

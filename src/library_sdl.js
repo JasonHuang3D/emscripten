@@ -1,3 +1,8 @@
+// Copyright 2010 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 //"use strict";
 
 // See browser tests for examples (tests/runner.py, search for sdl_). Run with
@@ -11,7 +16,7 @@
 
 var LibrarySDL = {
   $SDL__deps: [
-#if NO_FILESYSTEM == 0
+#if FILESYSTEM
     '$FS',
 #endif
     '$PATH', '$Browser', 'SDL_GetTicks', 'SDL_LockSurface',

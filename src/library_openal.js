@@ -1,3 +1,8 @@
+// Copyright 2013 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 //'use strict';
 
 var LibraryOpenAL = {
@@ -2639,6 +2644,7 @@ var LibraryOpenAL = {
 
   emscripten_alcGetStringiSOFT__proxy: 'sync',
   emscripten_alcGetStringiSOFT__sig: 'iiii',
+  emscripten_alcGetStringiSOFT__deps: ['alcGetString'],
   emscripten_alcGetStringiSOFT: function(deviceId, param, index) {
     if (!deviceId in AL.deviceRefCounts) {
 #if OPENAL_DEBUG
@@ -2666,7 +2672,7 @@ var LibraryOpenAL = {
       }
     default:
       if (index === 0) {
-        return alcGetString(deviceId, param);
+        return _alcGetString(deviceId, param);
       } else {
 #if OPENAL_DEBUG
         console.log('alcGetStringiSOFT() with param 0x' + param.toString(16) + ' not implemented yet');

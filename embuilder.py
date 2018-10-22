@@ -1,4 +1,8 @@
 #!/usr/bin/env python2
+# Copyright 2014 The Emscripten Authors.  All rights reserved.
+# Emscripten is available under two separate licenses, the MIT license and the
+# University of Illinois/NCSA Open Source License.  Both these licenses can be
+# found in the LICENSE file.
 
 '''
 Tool to manage building of various useful things, such as libc, libc++, native optimizer, as well as fetch and build ports like zlib and sdl2
@@ -98,36 +102,12 @@ CXX_WITH_STDLIB = '''
       '''
 
 SYSTEM_TASKS = ['compiler-rt', 'libc', 'libc-mt', 'libc-extras', 'emmalloc', 'emmalloc_debug', 'dlmalloc', 'dlmalloc_threadsafe', 'pthreads', 'dlmalloc_debug', 'dlmalloc_threadsafe_debug', 'libcxx', 'libcxx_noexcept', 'libcxxabi', 'html5']
-USER_TASKS = ['al', 'gl', 'binaryen', 'bullet', 'freetype', 'libpng', 'ogg', 'sdl2', 'sdl2-image', 'sdl2-ttf', 'sdl2-net', 'vorbis', 'zlib']
+USER_TASKS = ['al', 'gl', 'binaryen', 'bullet', 'freetype', 'icu', 'libpng', 'ogg', 'sdl2', 'sdl2-gfx', 'sdl2-image', 'sdl2-ttf', 'sdl2-net', 'vorbis', 'zlib']
 
 temp_files = shared.configuration.get_temp_files()
 logger = logging.getLogger(__file__)
 
 def build(src, result_libs, args=[]):
-  # if a library is a .a, also build the .bc, as we need it when forcing a
-  # a system library - in that case, we always want all the code linked in
-  if result_libs:
-    need_forced = []
-    with_forced = []
-    for result_lib in result_libs:
-      if result_lib.endswith('.a'):
-        short = result_lib[:-2]
-        if short in SYSTEM_TASKS:
-          need_forced.append(short.replace('_noexcept', ''))
-          with_forced.append(short + '.bc')
-          continue
-      with_forced.append(result_lib)
-
-    if need_forced:
-      if os.environ.get('EMCC_FORCE_STDLIBS'):
-        print('skipping forced (.bc) versions of .a libraries, since EMCC_FORCE_STDLIBS already set')
-      else:
-        os.environ['EMCC_FORCE_STDLIBS'] = ','.join(need_forced)
-        try:
-          build(src, with_forced, args)
-        finally:
-          del os.environ['EMCC_FORCE_STDLIBS']
-
   # build in order to generate the libraries
   # do it all in a temp dir where everything will be cleaned up
   temp_dir = temp_files.get_dir()
@@ -254,6 +234,8 @@ def main():
           return 0;
         }
       ''', ['al.bc'])
+    elif what == 'icu':
+      build_port('icu', 'libicuuc.bc', ['-s', 'USE_ICU=1'])
     elif what == 'zlib':
       build_port('zlib', 'libz.a', ['-s', 'USE_ZLIB=1'])
     elif what == 'bullet':
@@ -266,6 +248,8 @@ def main():
       build_port('libpng', 'libpng.bc', ['-s', 'USE_ZLIB=1', '-s', 'USE_LIBPNG=1'])
     elif what == 'sdl2':
       build_port('sdl2', 'libsdl2.bc', ['-s', 'USE_SDL=2'])
+    elif what == 'sdl2-gfx':
+      build_port('sdl2-gfx', 'libsdl2_gfx.bc', ['-s', 'USE_SDL=2', '-s', 'USE_SDL_IMAGE=2', '-s', 'USE_SDL_GFX=2'])
     elif what == 'sdl2-image':
       build_port('sdl2-image', 'libsdl2_image.bc', ['-s', 'USE_SDL=2', '-s', 'USE_SDL_IMAGE=2'])
     elif what == 'sdl2-net':
@@ -279,7 +263,7 @@ def main():
     elif what == 'binaryen':
       build_port('binaryen', None, ['-s', 'WASM=1'])
     elif what == 'cocos2d':
-      build_port('cocos2d', None, ['-s', 'USE_COCOS2D=3', '-s', 'USE_ZLIB=1', '-s', 'USE_LIBPNG=1'])
+      build_port('cocos2d', None, ['-s', 'USE_COCOS2D=3', '-s', 'USE_ZLIB=1', '-s', 'USE_LIBPNG=1', '-s', 'ERROR_ON_UNDEFINED_SYMBOLS=0'])
     else:
       logger.error('unfamiliar build target: ' + what)
       sys.exit(1)

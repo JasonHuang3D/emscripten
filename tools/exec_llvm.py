@@ -1,4 +1,8 @@
 #!/usr/bin/python2
+# Copyright 2011 The Emscripten Authors.  All rights reserved.
+# Emscripten is available under two separate licenses, the MIT license and the
+# University of Illinois/NCSA Open Source License.  Both these licenses can be
+# found in the LICENSE file.
 
 """Small utility to execute some llvm bitcode.
 
@@ -31,18 +35,18 @@ useful when this fails.
 
 import os
 import sys
-from subprocess import Popen
+from subprocess import check_call
 
 __rootpath__ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(__rootpath__)
 
 from tools.shared import LLVM_OPT, LLVM_INTERPRETER  # noqa
 
-Popen([LLVM_OPT, sys.argv[1], '-strip-debug', '-o', sys.argv[1] + '.clean.bc']).communicate()[0]
+check_call([LLVM_OPT, sys.argv[1], '-strip-debug', '-o', sys.argv[1] + '.clean.bc'])
 
 # Execute with empty environment - just like the JS script will have
-Popen([LLVM_INTERPRETER, sys.argv[1] + '.clean.bc'] + sys.argv[2:], env={'HOME': '.'}).communicate()[0]
+check_call([LLVM_INTERPRETER, sys.argv[1] + '.clean.bc'] + sys.argv[2:], env={'HOME': '.'})
 
-# Popen([LLVM_COMPILER, '-march=c', sys.argv[1], '-o', sys.argv[1] + '.cbe.c']).communicate()[0]
-# Popen(['gcc', sys.argv[1]+'.cbe.c', '-lstdc++']).communicate()[0]
-# Popen(['./a.out'] + sys.argv[2:]).communicate()[0]
+# check_call([LLVM_COMPILER, '-march=c', sys.argv[1], '-o', sys.argv[1] + '.cbe.c'])
+# check_call(['gcc', sys.argv[1]+'.cbe.c', '-lstdc++'])
+# check_call(['./a.out'] + sys.argv[2:])

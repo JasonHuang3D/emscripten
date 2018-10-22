@@ -1,3 +1,8 @@
+// Copyright 2014 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 var LibraryJSEvents = {
   $JSEvents__postset: 'JSEvents.staticInit();',
   $JSEvents: {
@@ -1813,7 +1818,7 @@ var LibraryJSEvents = {
     contextAttributes['failIfMajorPerformanceCaveat'] = !!{{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.failIfMajorPerformanceCaveat, 'i32') }}};
     contextAttributes['majorVersion'] = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.majorVersion, 'i32') }}};
     contextAttributes['minorVersion'] = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.minorVersion, 'i32') }}};
-    var enableExtensionsByDefault = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.enableExtensionsByDefault, 'i32') }}};
+    contextAttributes['enableExtensionsByDefault'] = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.enableExtensionsByDefault, 'i32') }}};
     contextAttributes['explicitSwapControl'] = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.explicitSwapControl, 'i32') }}};
     contextAttributes['renderViaOffscreenBackBuffer'] = {{{ makeGetValue('attributes', C_STRUCTS.EmscriptenWebGLContextAttributes.renderViaOffscreenBackBuffer, 'i32') }}};
 

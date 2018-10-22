@@ -1,3 +1,8 @@
+// Copyright 2017 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 // {{PREAMBLE_ADDITIONS}}
 
 var STACK_ALIGN = {{{ STACK_ALIGN }}};
@@ -186,13 +191,51 @@ function loadWebAssemblyModule(binary, loadAsync) {
       env[x] = Module[x];
     }
   }
+  // wasm dynamic libraries are pure wasm, so they cannot assist in
+  // their own loading. When side module A wants to import something
+  // provided by a side module B that is loaded later, we need to
+  // add a layer of indirection, but worse, we can't even tell what
+  // to add the indirection for, without inspecting what A's imports
+  // are. To do that here, we use a JS proxy (another option would
+  // be to inspect the binary directly).
+  var proxyHandler = {
+    'get': function(obj, prop) {
+      if (prop in obj) {
+        return obj[prop]; // already present
+      }
+      if (prop.startsWith('g$')) {
+        // a global. the g$ function returns the global address.
+        var name = prop.substr(2); // without g$ prefix
+        return env[prop] = function() {
+#if ASSERTIONS
+          assert(Module[name], 'missing linked global ' + name);
+#endif
+          return Module[name];
+        };
+      }
+      if (prop.startsWith('invoke_')) {
+        // A missing invoke, i.e., an invoke for a function type
+        // present in the dynamic library but not in the main JS,
+        // and the dynamic library cannot provide JS for it. Use
+        // the generic "X" invoke for it.
+        return env[prop] = invoke_X;
+      }
+      // if not a global, then a function - call it indirectly
+      return env[prop] = function() {
+#if ASSERTIONS
+        assert(Module[prop], 'missing linked function ' + prop);
+#endif
+        return Module[prop].apply(null, arguments);
+      };
+    }
+  };
   var info = {
     global: {
       'NaN': NaN,
       'Infinity': Infinity,
     },
     'global.Math': Math,
-    env: env,
+    env: new Proxy(env, proxyHandler),
     'asm2wasm': asm2wasmImports
   };
 #if ASSERTIONS
@@ -270,6 +313,7 @@ Module['loadWebAssemblyModule'] = loadWebAssemblyModule;
 #endif // RELOCATABLE
 
 #if EMULATED_FUNCTION_POINTERS
+#if WASM == 0
 function getFunctionTables(module) {
   if (!module) module = Module;
   var tables = {};
@@ -295,6 +339,7 @@ function alignFunctionTables(module) {
   }
   return maxx;
 }
+#endif // WASM == 0
 
 #if RELOCATABLE
 // register functions from a new module being loaded

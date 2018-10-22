@@ -11,7 +11,7 @@ There are two alternatives for how files are packaged: *preloading* and *embeddi
 *Emcc* uses the *file packager* to package the files and generate the :ref:`File System API <Filesystem-API>` calls that create and load the file system at run time. While *Emcc* is the recommended tool for packaging, there are cases where it can make sense to run the *file packager* manually.
 
 With ``--use-preload-plugins``, files can be automatically decoded based on
-their extension. See :ref:`preload-files` for more information.
+their extension. See :ref:`preloading-files` for more information.
 
 Packaging using emcc
 ====================
@@ -60,8 +60,8 @@ The file packager generates a **.data** file and **.js** file. The **.js** file 
 
 .. note::
 
-	-  Using the *file packager* allows you to run file packaging separately from compiling the code.
-	-  You can load multiple datafiles by running the file packager on each and loading the **.js** outputs. See `BananaBread <https://github.com/kripken/BananaBread>`_ for an example of this (`cube2/js/game-setup.js <https://github.com/kripken/BananaBread/blob/master/cube2/js/game-setup.js>`_).
+  -  Using the *file packager* allows you to run file packaging separately from compiling the code.
+  -  You can load multiple datafiles by running the file packager on each and loading the **.js** outputs. See `BananaBread <https://github.com/kripken/BananaBread>`_ for an example of this (`cube2/js/game-setup.js <https://github.com/kripken/BananaBread/blob/master/cube2/js/game-setup.js>`_).
 
 
 .. _packaging-files-data-file-location:

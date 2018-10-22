@@ -1,4 +1,9 @@
 /*
+ * Copyright 2010 The Emscripten Authors.  All rights reserved.
+ * Emscripten is available under two separate licenses, the MIT license and the
+ * University of Illinois/NCSA Open Source License.  Both these licenses can be
+ * found in the LICENSE file.
+ *
  * GL support. See http://kripken.github.io/emscripten-site/docs/porting/multimedia_and_graphics/OpenGL-support.html
  * for current status.
  */
@@ -350,7 +355,7 @@ var LibraryGL = {
 #if GL_ASSERTIONS
         GL.validateVertexAttribPointer(cb.size, cb.type, cb.stride, 0);
 #endif
-        GLctx.vertexAttribPointer(i, cb.size, cb.type, cb.normalized, cb.stride, 0);
+        cb.vertexAttribPointerAdaptor.call(GLctx, i, cb.size, cb.type, cb.normalized, cb.stride, 0);
       }
     },
 
@@ -766,7 +771,7 @@ var LibraryGL = {
 #if FULL_ES2
       context.clientBuffers = [];
       for (var i = 0; i < context.maxVertexAttribs; i++) {
-        context.clientBuffers[i] = { enabled: false, clientside: false, size: 0, type: 0, normalized: 0, stride: 0, ptr: 0 };
+        context.clientBuffers[i] = { enabled: false, clientside: false, size: 0, type: 0, normalized: 0, stride: 0, ptr: 0, vertexAttribPointerAdaptor: null };
       }
 
       GL.generateTempBuffers(false, context);
@@ -924,7 +929,7 @@ var LibraryGL = {
         var glVersion = GLctx.getParameter(GLctx.VERSION);
         // return GLES version string corresponding to the version of the WebGL context
 #if USE_WEBGL2
-        if (GLctx.canvas.GLctxObject.version >= 2) glVersion = 'OpenGL ES 3.0 (' + glVersion + ')';
+        if (GL.currentContext.version >= 2) glVersion = 'OpenGL ES 3.0 (' + glVersion + ')';
         else
 #endif
         {
@@ -1002,7 +1007,7 @@ var LibraryGL = {
         break;
 #if USE_WEBGL2
       case 0x821D: // GL_NUM_EXTENSIONS
-        if (GLctx.canvas.GLctxObject.version < 2) {
+        if (GL.currentContext.version < 2) {
           GL.recordError(0x0502 /* GL_INVALID_OPERATION */); // Calling GLES3/WebGL2 function with a GLES2/WebGL1 context
           return;
         }
@@ -1011,7 +1016,7 @@ var LibraryGL = {
         break;
       case 0x821B: // GL_MAJOR_VERSION
       case 0x821C: // GL_MINOR_VERSION
-        if (GLctx.canvas.GLctxObject.version < 2) {
+        if (GL.currentContext.version < 2) {
           GL.recordError(0x0500); // GL_INVALID_ENUM
           return;
         }
@@ -1117,7 +1122,7 @@ var LibraryGL = {
 
 #if USE_WEBGL2
   glGetStringi: function(name, index) {
-    if (GLctx.canvas.GLctxObject.version < 2) {
+    if (GL.currentContext.version < 2) {
       GL.recordError(0x0502 /* GL_INVALID_OPERATION */); // Calling GLES3/WebGL2 function with a GLES2/WebGL1 context
       return 0;
     }
@@ -4031,7 +4036,7 @@ var LibraryGL = {
     // defaultFbo may not be present if 'renderViaOffscreenBackBuffer' was not enabled during context creation time,
     // i.e. setting -s OFFSCREEN_FRAMEBUFFER=1 at compilation time does not yet mandate that offscreen back buffer
     // is being used, but that is ultimately decided at context creation time.
-    GLctx.bindFramebuffer(target, framebuffer ? GL.framebuffers[framebuffer] : GLctx.canvas.GLctxObject.defaultFbo);
+    GLctx.bindFramebuffer(target, framebuffer ? GL.framebuffers[framebuffer] : GL.currentContext.defaultFbo);
 #else
     GLctx.bindFramebuffer(target, framebuffer ? GL.framebuffers[framebuffer] : null);
 #endif
@@ -7609,6 +7614,9 @@ var LibraryGL = {
       cb.stride = stride;
       cb.ptr = ptr;
       cb.clientside = true;
+      cb.vertexAttribPointerAdaptor = function(index, size, type, normalized, stride, ptr) {
+        this.vertexAttribPointer(index, size, type, normalized, stride, ptr);
+      };
       return;
     }
     cb.clientside = false;
@@ -7634,6 +7642,9 @@ var LibraryGL = {
       cb.stride = stride;
       cb.ptr = ptr;
       cb.clientside = true;
+      cb.vertexAttribPointerAdaptor = function(index, size, type, normalized, stride, ptr) {
+        this.vertexAttribIPointer(index, size, type, stride, ptr);
+      };
       return;
     }
     cb.clientside = false;
@@ -7965,7 +7976,10 @@ keys(LibraryGL).forEach(function(x) {
       var orig = dep;
       dep = 'emscripten_' + dep;
       var fixed = LibraryGL[x].toString().replace(new RegExp('_' + orig + '\\(', 'g'), '_' + dep + '(');
-      fixed = fixed.substr(0, 9) + '_' + y + fixed.substr(9);
+      // `function` is 8 characters, add space and an explicit name after if there isn't one already
+      if (fixed.startsWith('function(') || fixed.startsWith('function (')) {
+        fixed = fixed.substr(0, 8) + ' _' + y + fixed.substr(8);
+      }
       LibraryGL[x] = eval('(function() { return ' + fixed + ' })()');
     }
     return dep;
@@ -7978,4 +7992,4 @@ keys(LibraryGL).forEach(function(x) {
 mergeInto(LibraryManager.library, LibraryGL);
 
 assert(!(FULL_ES2 && LEGACY_GL_EMULATION), 'cannot emulate both ES2 and legacy GL');
-
+assert(!(FULL_ES3 && LEGACY_GL_EMULATION), 'cannot emulate both ES3 and legacy GL');

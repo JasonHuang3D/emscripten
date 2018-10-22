@@ -1,6 +1,11 @@
+// Copyright 2015 The Emscripten Authors.  All rights reserved.
+// Emscripten is available under two separate licenses, the MIT license and the
+// University of Illinois/NCSA Open Source License.  Both these licenses can be
+// found in the LICENSE file.
+
 var SyscallsLibrary = {
   $SYSCALLS__deps: [
-#if NO_FILESYSTEM == 0
+#if FILESYSTEM
                    '$FS', '$ERRNO_CODES', '$PATH',
 #endif
 #if SYSCALL_DEBUG
@@ -8,7 +13,7 @@ var SyscallsLibrary = {
 #endif
   ],
   $SYSCALLS: {
-#if NO_FILESYSTEM == 0
+#if FILESYSTEM
     // global constants
     DEFAULT_POLLMASK: {{{ cDefine('POLLIN') }}} | {{{ cDefine('POLLOUT') }}},
 
@@ -148,7 +153,20 @@ var SyscallsLibrary = {
       }
       return ret;
     },
-#endif // NO_FILESYSTEM == 0
+#else
+    // MEMFS filesystem disabled lite handling of stdout and stderr:
+    buffers: [null, [], []], // 1 => stdout, 2 => stderr
+    printChar: function(stream, curr) {
+      var buffer = SYSCALLS.buffers[stream];
+      assert(buffer);
+      if (curr === 0 || curr === {{{ charCode('\n') }}}) {
+        (stream === 1 ? out : err)(UTF8ArrayToString(buffer, 0));
+        buffer.length = 0;
+      } else {
+        buffer.push(curr);
+      }
+    },
+#endif // FILESYSTEM
 
     // arguments handling
 
@@ -169,7 +187,7 @@ var SyscallsLibrary = {
 #endif
       return ret;
     },
-#if NO_FILESYSTEM == 0
+#if FILESYSTEM
     getStreamFromFD: function() {
       var stream = FS.getStream(SYSCALLS.get());
       if (!stream) throw new FS.ErrnoError(ERRNO_CODES.EBADF);
@@ -197,7 +215,7 @@ var SyscallsLibrary = {
 #endif
       return info;
     },
-#endif // NO_FILESYSTEM == 0
+#endif // FILESYSTEM
     get64: function() {
       var low = SYSCALLS.get(), high = SYSCALLS.get();
       if (low >= 0) assert(high === 0);
@@ -222,8 +240,17 @@ var SyscallsLibrary = {
     return FS.read(stream, {{{ heapAndOffset('HEAP8', 'buf') }}}, count);
   },
   __syscall4: function(which, varargs) { // write
+#if FILESYSTEM
     var stream = SYSCALLS.getStreamFromFD(), buf = SYSCALLS.get(), count = SYSCALLS.get();
     return FS.write(stream, {{{ heapAndOffset('HEAP8', 'buf') }}}, count);
+#else
+    // hack to support printf in FILESYSTEM=0
+    var stream = SYSCALLS.get(), buf = SYSCALLS.get(), count = SYSCALLS.get();
+    for (var i = 0; i < count; i++) {
+      SYSCALLS.printChar(stream, HEAPU8[buf+i]);
+    }
+    return count;
+#endif // FILESYSTEM
   },
   __syscall5: function(which, varargs) { // open
     var pathname = SYSCALLS.getStr(), flags = SYSCALLS.get(), mode = SYSCALLS.get() // optional TODO
@@ -313,9 +340,9 @@ var SyscallsLibrary = {
     return -ERRNO_CODES.ENOSYS; // unsupported features
   },
   __syscall54: function(which, varargs) { // ioctl
-#if NO_FILESYSTEM
+#if FILESYSTEM == 0
 #if SYSCALL_DEBUG
-    err('no-op in ioctl syscall due to NO_FILESYSTEM');
+    err('no-op in ioctl syscall due to FILESYSTEM=0');
 #endif
     return 0;
 #else
@@ -367,7 +394,7 @@ var SyscallsLibrary = {
       }
       default: abort('bad ioctl syscall ' + op);
     }
-#endif // NO_FILESYSTEM
+#endif // FILESYSTEM
   },
   __syscall57__deps: ['$PROCINFO'],
   __syscall57: function(which, varargs) { // setpgid
@@ -791,53 +818,38 @@ var SyscallsLibrary = {
     var stream = SYSCALLS.getStreamFromFD(), iov = SYSCALLS.get(), iovcnt = SYSCALLS.get();
     return SYSCALLS.doReadv(stream, iov, iovcnt);
   },
-#if NO_FILESYSTEM
+#if FILESYSTEM == 0
   $flush_NO_FILESYSTEM: function() {
     // flush anything remaining in the buffers during shutdown
     var fflush = Module["_fflush"];
     if (fflush) fflush(0);
-    var printChar = ___syscall146.printChar;
-    if (!printChar) return;
-    var buffers = ___syscall146.buffers;
-    if (buffers[1].length) printChar(1, {{{ charCode("\n") }}});
-    if (buffers[2].length) printChar(2, {{{ charCode("\n") }}});
+    var buffers = SYSCALLS.buffers;
+    if (buffers[1].length) SYSCALLS.printChar(1, {{{ charCode("\n") }}});
+    if (buffers[2].length) SYSCALLS.printChar(2, {{{ charCode("\n") }}});
   },
   __syscall146__deps: ['$flush_NO_FILESYSTEM'],
-#if NO_EXIT_RUNTIME == 0
+#if EXIT_RUNTIME == 1
   __syscall146__postset: '__ATEXIT__.push(flush_NO_FILESYSTEM);',
 #endif
 #endif
   __syscall146: function(which, varargs) { // writev
-#if NO_FILESYSTEM == 0
+#if FILESYSTEM
     var stream = SYSCALLS.getStreamFromFD(), iov = SYSCALLS.get(), iovcnt = SYSCALLS.get();
     return SYSCALLS.doWritev(stream, iov, iovcnt);
 #else
-    // hack to support printf in NO_FILESYSTEM
+    // hack to support printf in FILESYSTEM=0
     var stream = SYSCALLS.get(), iov = SYSCALLS.get(), iovcnt = SYSCALLS.get();
     var ret = 0;
-    if (!___syscall146.buffers) {
-      ___syscall146.buffers = [null, [], []]; // 1 => stdout, 2 => stderr
-      ___syscall146.printChar = function(stream, curr) {
-        var buffer = ___syscall146.buffers[stream];
-        assert(buffer);
-        if (curr === 0 || curr === {{{ charCode('\n') }}}) {
-          (stream === 1 ? out : err)(UTF8ArrayToString(buffer, 0));
-          buffer.length = 0;
-        } else {
-          buffer.push(curr);
-        }
-      };
-    }
     for (var i = 0; i < iovcnt; i++) {
       var ptr = {{{ makeGetValue('iov', 'i*8', 'i32') }}};
       var len = {{{ makeGetValue('iov', 'i*8 + 4', 'i32') }}};
       for (var j = 0; j < len; j++) {
-        ___syscall146.printChar(stream, HEAPU8[ptr+j]);
+        SYSCALLS.printChar(stream, HEAPU8[ptr+j]);
       }
       ret += len;
     }
     return ret;
-#endif // NO_FILESYSTEM == 0
+#endif // FILESYSTEM
   },
   __syscall147__deps: ['$PROCINFO'],
   __syscall147: function(which, varargs) { // getsid
@@ -1045,9 +1057,9 @@ var SyscallsLibrary = {
   },
   __syscall221__deps: ['__setErrNo'],
   __syscall221: function(which, varargs) { // fcntl64
-#if NO_FILESYSTEM
+#if FILESYSTEM == 0
 #if SYSCALL_DEBUG
-    err('no-op in fcntl64 syscall due to NO_FILESYSTEM');
+    err('no-op in fcntl64 syscall due to FILESYSTEM=0');
 #endif
     return 0;
 #else
@@ -1099,7 +1111,7 @@ var SyscallsLibrary = {
         return -ERRNO_CODES.EINVAL;
       }
     }
-#endif // NO_FILESYSTEM
+#endif // FILESYSTEM
   },
   __syscall265: function(which, varargs) { // clock_nanosleep
 #if SYSCALL_DEBUG
@@ -1177,9 +1189,6 @@ var SyscallsLibrary = {
     return SYSCALLS.doStat(nofollow ? FS.lstat : FS.stat, path, buf);
   },
   __syscall301: function(which, varargs) { // unlinkat
-#if SYSCALL_DEBUG
-    err('warning: untested syscall');
-#endif
     var dirfd = SYSCALLS.get(), path = SYSCALLS.getStr(), flags = SYSCALLS.get();
     path = SYSCALLS.calculateAt(dirfd, path);
     if (flags === 0) {

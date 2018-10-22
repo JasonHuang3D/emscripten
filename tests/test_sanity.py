@@ -1,14 +1,22 @@
+# Copyright 2013 The Emscripten Authors.  All rights reserved.
+# Emscripten is available under two separate licenses, the MIT license and the
+# University of Illinois/NCSA Open Source License.  Both these licenses can be
+# found in the LICENSE file.
+
 from __future__ import print_function
-import contextlib
 import os
 import platform
 import shutil
 import stat
-import subprocess
 import time
+import re
+import tempfile
 
-from runner import RunnerCore, path_from_root
-from tools.shared import *
+from runner import RunnerCore, path_from_root, env_modify, chdir
+from tools.shared import NODE_JS, PYTHON, EMCC, SPIDERMONKEY_ENGINE, V8_ENGINE, CONFIG_FILE, PIPE, STDOUT, EM_CONFIG, LLVM_ROOT, CANONICAL_TEMP_DIR, EMSCRIPTEN_VERSION
+from tools.shared import run_process, try_delete, run_js, safe_ensure_dirs, expected_llvm_version, generate_sanity
+from tools.shared import Cache, Settings
+from tools import jsrun, shared
 
 SANITY_FILE = CONFIG_FILE + '_sanity'
 commands = [[PYTHON, EMCC], [PYTHON, path_from_root('tests', 'runner.py'), 'blahblah']]
@@ -40,32 +48,7 @@ def add_to_config(content):
 
 
 def mtime(filename):
-  return os.stat(filename).st_mtime
-
-
-@contextlib.contextmanager
-def chdir(dir):
-  """A context manager that performs actions in the given directory."""
-  orig_cwd = os.getcwd()
-  os.chdir(dir)
-  try:
-    yield
-  finally:
-    os.chdir(orig_cwd)
-
-
-@contextlib.contextmanager
-def env_modify(updates):
-  """A context manager that updates os.environ."""
-  # This could also be done with mock.patch.dict() but taking a dependency
-  # on the mock library is probably not worth the benefit.
-  old_env = os.environ.copy()
-  os.environ.update(updates)
-  try:
-    yield
-  finally:
-    os.environ.clear()
-    os.environ.update(old_env)
+  return os.path.getmtime(filename)
 
 
 SANITY_MESSAGE = 'Emscripten: Running sanity checks'
@@ -74,14 +57,16 @@ EMBUILDER = path_from_root('embuilder.py')
 
 # arguments to build a minimal hello world program, without even libc
 # (-O1 avoids -O0's default assertions which bring in checking code;
-#  NO_FILESYSTEM avoids bringing libc for that)
-MINIMAL_HELLO_WORLD = [path_from_root('tests', 'hello_world_em_asm.c'), '-O1', '-s', 'NO_FILESYSTEM=1']
+#  FILESYSTEM=0 avoids bringing libc for that)
+# (ERROR_ON_UNDEFINED_SYMBOLS=0 is needed because __errno_location is
+#  not included on the native side but needed by a lot of JS libraries.)
+MINIMAL_HELLO_WORLD = [path_from_root('tests', 'hello_world_em_asm.c'), '-O1', '-s', 'FILESYSTEM=0', '-s', 'ERROR_ON_UNDEFINED_SYMBOLS=0']
 
 
 class sanity(RunnerCore):
   @classmethod
-  def setUpClass(self):
-    super(RunnerCore, self).setUpClass()
+  def setUpClass(cls):
+    super(sanity, cls).setUpClass()
     shutil.copyfile(CONFIG_FILE, CONFIG_FILE + '_backup')
 
     print()
@@ -98,19 +83,21 @@ class sanity(RunnerCore):
     assert 'EMCC_WASM_BACKEND' not in os.environ, 'do not force wasm backend either way in sanity checks!'
 
   @classmethod
-  def tearDownClass(self):
-    super(RunnerCore, self).tearDownClass()
+  def tearDownClass(cls):
+    super(sanity, cls).tearDownClass()
     restore()
 
   def setUp(self):
+    super(sanity, self).setUp()
     wipe()
     self.start_time = time.time()
 
   def tearDown(self):
+    super(sanity, self).tearDown()
     print('time:', time.time() - self.start_time)
 
   def do(self, command):
-    print(' '.join(command))
+    print('Running: ' + ' '.join(command))
     if type(command) is not list:
       command = [command]
     if command[0] == EMCC:
@@ -131,7 +118,8 @@ class sanity(RunnerCore):
     self.assertContained(expected, output)
     return output
 
-  def test_aaa_normal(self): # this should be the very first thing that runs. if this fails, everything else is irrelevant!
+  # this should be the very first thing that runs. if this fails, everything else is irrelevant!
+  def test_aaa_normal(self):
     for command in commands:
       # Your existing EM_CONFIG should work!
       restore_and_set_up()
@@ -181,13 +169,14 @@ class sanity(RunnerCore):
       self.assertNotContained('}}}', config_file)
       self.assertContained('{{{', template_file)
       self.assertContained('}}}', template_file)
-      for content in ['EMSCRIPTEN_ROOT', 'LLVM_ROOT', 'NODE_JS', 'TEMP_DIR', 'COMPILER_ENGINE', 'JS_ENGINES']:
+      for content in ['LLVM_ROOT', 'NODE_JS', 'TEMP_DIR', 'COMPILER_ENGINE', 'JS_ENGINES']:
         self.assertContained(content, config_file)
 
-      # The guessed config should be ok XXX This depends on your local system! it is possible `which` guesses wrong
-      #try_delete('a.out.js')
-      #output = Popen([PYTHON, EMCC, path_from_root('tests', 'hello_world.c')], stdout=PIPE, stderr=PIPE).communicate()
-      #self.assertContained('hello, world!', run_js('a.out.js'), output)
+      # The guessed config should be ok
+      # XXX This depends on your local system! it is possible `which` guesses wrong
+      # try_delete('a.out.js')
+      # output = run_process([PYTHON, EMCC, path_from_root('tests', 'hello_world.c')], stdout=PIPE, stderr=PIPE).output
+      # self.assertContained('hello, world!', run_js('a.out.js'), output)
 
       # Second run, with bad EM_CONFIG
       for settings in ['blah', 'LLVM_ROOT="blarg"; JS_ENGINES=[]; COMPILER_ENGINE=NODE_JS=SPIDERMONKEY_ENGINE=[]']:
@@ -235,7 +224,7 @@ class sanity(RunnerCore):
     restore_and_set_up()
 
     # Clang should report the version number we expect, and emcc should not warn
-    assert check_clang_version()
+    assert shared.check_clang_version()
     output = self.check_working(EMCC)
     assert LLVM_WARNING not in output, output
 
@@ -255,7 +244,8 @@ class sanity(RunnerCore):
           expected_x, expected_y = (int(x) for x in expected_llvm_version().split('.'))
           expected_x += x
           expected_y += y
-          if expected_x < 0 or expected_y < 0: continue # must be a valid llvm version
+          if expected_x < 0 or expected_y < 0:
+            continue # must be a valid llvm version
           print(expected_llvm_version(), x, y, expected_x, expected_y)
           f.write('echo "clang version %d.%d" 1>&2\n' % (expected_x, expected_y))
           f.close()
@@ -268,17 +258,6 @@ class sanity(RunnerCore):
             output = self.check_working(EMCC)
             assert LLVM_WARNING not in output, output
 
-  def test_emscripten_root(self):
-    # The correct path
-    restore_and_set_up()
-    add_to_config("EMSCRIPTEN_ROOT = '%s'" % path_from_root())
-    self.check_working(EMCC)
-
-    # The correct path with extra stuff
-    restore_and_set_up()
-    add_to_config("EMSCRIPTEN_ROOT = '%s'" % (path_from_root() + os.path.sep))
-    self.check_working(EMCC)
-
   def test_llvm_fastcomp(self):
     WARNING = 'fastcomp in use, but LLVM has not been built with the JavaScript backend as a target'
     WARNING2 = 'you can fall back to the older (pre-fastcomp) compiler core, although that is not recommended, see http://kripken.github.io/emscripten-site/docs/building_from_source/LLVM-Backend.html'
@@ -286,7 +265,7 @@ class sanity(RunnerCore):
     restore_and_set_up()
 
     # Should see js backend during sanity check
-    assert check_fastcomp()
+    assert shared.check_fastcomp()
     output = self.check_working(EMCC)
     self.assertNotIn(WARNING, output)
     self.assertNotIn(WARNING2, output)
@@ -295,7 +274,7 @@ class sanity(RunnerCore):
     restore_and_set_up()
     with open(CONFIG_FILE, 'a') as f:
       f.write('LLVM_ROOT = "' + path_from_root('tests', 'fake', 'bin') + '"')
-    #print '1', open(CONFIG_FILE).read()
+    # print '1', open(CONFIG_FILE).read()
 
     try_delete(path_from_root('tests', 'fake'))
     os.makedirs(path_from_root('tests', 'fake', 'bin'))
@@ -371,7 +350,7 @@ class sanity(RunnerCore):
     restore_and_set_up()
 
     # Clang should report the version number we expect, and emcc should not warn
-    assert check_node_version()
+    assert shared.check_node_version()
     output = self.check_working(EMCC)
     self.assertNotIn(NODE_WARNING, output)
 
@@ -442,6 +421,8 @@ fi
     # but with EMCC_DEBUG=1 we should check
     with env_modify({'EMCC_DEBUG': '1'}):
       output = self.check_working(EMCC)
+    try_delete(CANONICAL_TEMP_DIR)
+
     self.assertContained(SANITY_MESSAGE, output)
     output = self.check_working(EMCC)
     self.assertNotContained(SANITY_MESSAGE, output)
@@ -467,8 +448,7 @@ fi
     # emcc should be configurable directly from EM_CONFIG without any config file
     restore_and_set_up()
     config = open(CONFIG_FILE, 'r').read()
-    dirname = tempfile.mkdtemp(prefix='emscripten_test_' + self.__class__.__name__ + '_', dir=TEMP_DIR)
-    open(os.path.join(dirname, 'main.cpp'), 'w').write('''
+    open('main.cpp', 'w').write('''
       #include <stdio.h>
       int main() {
         printf("hello from emcc with no config file\\n");
@@ -478,13 +458,9 @@ fi
 
     wipe()
     with env_modify({'EM_CONFIG': config}):
-      run_process([PYTHON, EMCC, os.path.join(dirname, 'main.cpp'), '-o', os.path.join(dirname, 'a.out.js')])
+      run_process([PYTHON, EMCC, 'main.cpp', '-o', 'a.out.js'])
 
-    with chdir(dirname):
-      self.assertContained('hello from emcc with no config file', run_js('a.out.js'))
-    shutil.rmtree(dirname)
-
-    try_delete(CANONICAL_TEMP_DIR)
+    self.assertContained('hello from emcc with no config file', run_js('a.out.js'))
 
   def test_emcc_caching(self):
     INCLUDING_MESSAGE = 'including X'
@@ -493,44 +469,32 @@ fi
 
     EMCC_CACHE = Cache.dirname
 
-    for compiler in [EMCC]:
-      print(compiler)
+    restore_and_set_up()
 
-      restore_and_set_up()
+    Cache.erase()
+    assert not os.path.exists(EMCC_CACHE)
 
-      Cache.erase()
-      assert not os.path.exists(EMCC_CACHE)
+    with env_modify({'EMCC_DEBUG': '1'}):
+      # Building a file that *does* need something *should* trigger cache
+      # generation, but only the first time
+      for filename, libname in [('hello_libcxx.cpp', 'libcxx')]:
+        for i in range(3):
+          print(filename, libname, i)
+          self.clear()
+          output = self.do([EMCC, '-O' + str(i), '-s', '--llvm-lto', '0', path_from_root('tests', filename), '--save-bc', 'a.bc', '-s', 'DISABLE_EXCEPTION_CATCHING=0'])
+          # print '\n\n\n', output
+          assert INCLUDING_MESSAGE.replace('X', libname) in output
+          if libname == 'libc':
+            assert INCLUDING_MESSAGE.replace('X', 'libcxx') not in output # we don't need libcxx in this code
+          else:
+            assert INCLUDING_MESSAGE.replace('X', 'libc') in output # libcxx always forces inclusion of libc
+          assert (BUILDING_MESSAGE.replace('X', libname) in output) == (i == 0), 'Must only build the first time'
+          self.assertContained('hello, world!', run_js('a.out.js'))
+          assert os.path.exists(EMCC_CACHE)
+          full_libname = libname + '.bc' if libname != 'libcxx' else libname + '.a'
+          assert os.path.exists(os.path.join(EMCC_CACHE, full_libname))
 
-      with env_modify({'EMCC_DEBUG': '1'}):
-        self.working_dir = os.path.join(TEMP_DIR, 'emscripten_temp')
-        if not os.path.exists(self.working_dir):
-          os.mkdir(self.working_dir)
-
-        basebc_name = os.path.join(TEMP_DIR, 'emscripten_temp', 'emcc-0-basebc.bc')
-        dcebc_name = os.path.join(TEMP_DIR, 'emscripten_temp', 'emcc-1-linktime.bc')
-        ll_names = [os.path.join(TEMP_DIR, 'emscripten_temp', 'emcc-X-ll.ll').replace('X', str(x)) for x in range(2,5)]
-
-        # Building a file that *does* need something *should* trigger cache generation, but only the first time
-        for filename, libname in [('hello_libcxx.cpp', 'libcxx')]:
-          for i in range(3):
-            print(filename, libname, i)
-            self.clear()
-            try_delete(basebc_name) # we might need to check this file later
-            try_delete(dcebc_name) # we might need to check this file later
-            for ll_name in ll_names: try_delete(ll_name)
-            output = self.do([compiler, '-O' + str(i), '-s', '--llvm-lto', '0', path_from_root('tests', filename), '--save-bc', 'a.bc', '-s', 'DISABLE_EXCEPTION_CATCHING=0'])
-            #print '\n\n\n', output
-            assert INCLUDING_MESSAGE.replace('X', libname) in output
-            if libname == 'libc':
-              assert INCLUDING_MESSAGE.replace('X', 'libcxx') not in output # we don't need libcxx in this code
-            else:
-              assert INCLUDING_MESSAGE.replace('X', 'libc') in output # libcxx always forces inclusion of libc
-            assert (BUILDING_MESSAGE.replace('X', libname) in output) == (i == 0), 'Must only build the first time'
-            self.assertContained('hello, world!', run_js('a.out.js'))
-            assert os.path.exists(EMCC_CACHE)
-            full_libname = libname + '.bc' if libname != 'libcxx' else libname + '.a'
-            assert os.path.exists(os.path.join(EMCC_CACHE, full_libname))
-
+    try_delete(CANONICAL_TEMP_DIR)
     restore_and_set_up()
 
     def ensure_cache():
@@ -552,8 +516,6 @@ fi
       self.assertIn(ERASING_MESSAGE, output)
       self.assertFalse(os.path.exists(EMCC_CACHE))
 
-    try_delete(CANONICAL_TEMP_DIR)
-
   def test_nostdincxx(self):
     restore_and_set_up()
     Cache.erase()
@@ -561,17 +523,19 @@ fi
     for compiler in [EMCC]:
       print(compiler)
       run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-v']) # run once to ensure binaryen port is all ready
-      output = run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-v'], stdout=PIPE, stderr=PIPE)
-      out = output.stdout
-      err = output.stderr
-      output2 = run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-v', '-nostdinc++'], stdout=PIPE, stderr=PIPE)
-      out2 = output2.stdout
-      err2 = output2.stderr
+      proc = run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-v'], stdout=PIPE, stderr=PIPE)
+      out = proc.stdout
+      err = proc.stderr
+      proc2 = run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-v', '-nostdinc++'], stdout=PIPE, stderr=PIPE)
+      out2 = proc2.stdout
+      err2 = proc2.stderr
       self.assertIdentical(out, out2)
+
       def focus(e):
         assert 'search starts here:' in e, e
         assert e.count('End of search list.') == 1, e
-        return e[e.index('search starts here:'):e.index('End of search list.')+20]
+        return e[e.index('search starts here:'):e.index('End of search list.') + 20]
+
       err = focus(err)
       err2 = focus(err2)
       assert err == err2, err + '\n\n\n\n' + err2
@@ -579,14 +543,13 @@ fi
   def test_emconfig(self):
     restore_and_set_up()
 
-    (fd, custom_config_filename) = tempfile.mkstemp(prefix='.emscripten_config_')
+    fd, custom_config_filename = tempfile.mkstemp(prefix='.emscripten_config_')
 
     orig_config = open(CONFIG_FILE, 'r').read()
 
     # Move the ~/.emscripten to a custom location.
-    tfile = os.fdopen(fd, "w")
-    tfile.write(orig_config)
-    tfile.close()
+    with os.fdopen(fd, "w") as f:
+      f.write(orig_config)
 
     # Make a syntax error in the original config file so that attempting to access it would fail.
     open(CONFIG_FILE, 'w').write('asdfasdfasdfasdf\n\'\'\'' + orig_config)
@@ -597,11 +560,15 @@ fi
       self.do([PYTHON, EMCC, '--em-config', custom_config_filename] + MINIMAL_HELLO_WORLD + ['-O2'])
       result = run_js('a.out.js')
 
+    self.assertContained('hello, world!', result)
+
     # Clean up created temp files.
     os.remove(custom_config_filename)
+    if Settings.WASM_BACKEND:
+      os.remove(custom_config_filename + "_sanity_wasm")
+    else:
+      os.remove(custom_config_filename + "_sanity")
     shutil.rmtree(temp_dir)
-
-    self.assertContained('hello, world!', result)
 
   def test_emcc_ports(self):
     restore_and_set_up()
@@ -691,7 +658,8 @@ fi
         print('phase 1, part', native)
         Cache.erase()
         try:
-          if native is not None: os.environ['EMCC_NATIVE_OPTIMIZER'] = str(native)
+          if native is not None:
+            os.environ['EMCC_NATIVE_OPTIMIZER'] = str(native)
           output = build()
           assert ('js optimizer using native' in output) == (not not (native or native is None)), output
           test()
@@ -703,7 +671,8 @@ fi
             assert 'js optimizer using native' in output
             test()
         finally:
-          if native is not None: del os.environ['EMCC_NATIVE_OPTIMIZER']
+          if native is not None:
+            del os.environ['EMCC_NATIVE_OPTIMIZER']
 
       # force a build failure, see we fall back to non-native
 
@@ -750,6 +719,8 @@ fi
           assert 'js optimizer using native' in output
           test() # still works
 
+    try_delete(CANONICAL_TEMP_DIR)
+
   def test_embuilder(self):
     restore_and_set_up()
 
@@ -767,8 +738,8 @@ fi
       ([PYTHON, EMBUILDER, 'build', 'emmalloc'], ['building and verifying emmalloc', 'success'], True, ['emmalloc.bc']),
       ([PYTHON, EMBUILDER, 'build', 'emmalloc_debug'], ['building and verifying emmalloc', 'success'], True, ['emmalloc_debug.bc']),
       ([PYTHON, EMBUILDER, 'build', 'pthreads'], ['building and verifying pthreads', 'success'], True, ['pthreads.bc']),
-      ([PYTHON, EMBUILDER, 'build', 'libcxx'], ['success'], True, ['libcxx.a', 'libcxx.bc']),
-      ([PYTHON, EMBUILDER, 'build', 'libcxx_noexcept'], ['success'], True, ['libcxx_noexcept.a', 'libcxx_noexcept.bc']),
+      ([PYTHON, EMBUILDER, 'build', 'libcxx'], ['success'], True, ['libcxx.a']),
+      ([PYTHON, EMBUILDER, 'build', 'libcxx_noexcept'], ['success'], True, ['libcxx_noexcept.a']),
       ([PYTHON, EMBUILDER, 'build', 'libcxxabi'], ['success'], True, ['libcxxabi.bc']),
       ([PYTHON, EMBUILDER, 'build', 'gl'], ['success'], True, ['gl.bc']),
       ([PYTHON, EMBUILDER, 'build', 'native_optimizer'], ['success'], True, ['optimizer.2.exe']),
@@ -778,9 +749,11 @@ fi
       ([PYTHON, EMBUILDER, 'build', 'vorbis'], ['building and verifying vorbis', 'success'], True, ['vorbis.bc']),
       ([PYTHON, EMBUILDER, 'build', 'ogg'], ['building and verifying ogg', 'success'], True, ['ogg.bc']),
       ([PYTHON, EMBUILDER, 'build', 'sdl2'], ['success'], True, ['sdl2.bc']),
+      ([PYTHON, EMBUILDER, 'build', 'sdl2-gfx'], ['success'], True, ['sdl2-gfx.bc']),
       ([PYTHON, EMBUILDER, 'build', 'sdl2-image'], ['success'], True, ['sdl2-image.bc']),
       ([PYTHON, EMBUILDER, 'build', 'freetype'], ['building and verifying freetype', 'success'], True, ['freetype.bc']),
       ([PYTHON, EMBUILDER, 'build', 'harfbuzz'], ['building and verifying harfbuzz', 'success'], True, ['harfbuzz.bc']),
+      ([PYTHON, EMBUILDER, 'build', 'icu'], ['building and verifying icu', 'success'], True, ['icu.bc']),
       ([PYTHON, EMBUILDER, 'build', 'sdl2-ttf'], ['building and verifying sdl2-ttf', 'success'], True, ['sdl2-ttf.bc']),
       ([PYTHON, EMBUILDER, 'build', 'sdl2-net'], ['building and verifying sdl2-net', 'success'], True, ['sdl2-net.bc']),
       ([PYTHON, EMBUILDER, 'build', 'binaryen'], ['building and verifying binaryen', 'success'], True, []),
@@ -802,11 +775,13 @@ fi
         else:
           print('    erase file', lib)
           try_delete(Cache.get_path(lib))
-      output = run_process(command, stdout=PIPE, stderr=STDOUT, check=False)
-      out = output.stdout
-      err = output.stderr
-      assert (output.returncode == 0) == success, [out, err]
-      if not isinstance(expected, list): expected = [expected]
+      proc = run_process(command, stdout=PIPE, stderr=STDOUT, check=False)
+      out = proc.stdout
+      if success and proc.returncode != 0:
+        print(out)
+      assert (proc.returncode == 0) == success
+      if not isinstance(expected, list):
+        expected = [expected]
       for ex in expected:
         print('    seek', ex)
         assert ex in out, out
@@ -867,12 +842,11 @@ fi
     def test():
       self.assertContained('hello, world!', run_js('a.out.js'))
 
-    assert 'EMCC_FORCE_STDLIBS' not in os.environ
-
     print('normal build')
-    Cache.erase()
-    build()
-    test()
+    with env_modify({'EMCC_FORCE_STDLIBS': None}):
+      Cache.erase()
+      build()
+      test()
 
     print('wacky env vars, these should not mess our bootstrapping')
     with env_modify({'EMCC_FORCE_STDLIBS': '1'}):
@@ -972,6 +946,7 @@ fi
       with env_modify({'LLVM': path_from_root('tests', 'fake2', 'bin')}):
         self.check_working([EMCC] + MINIMAL_HELLO_WORLD + ['-c'], 'regenerating vanilla check since other llvm')
 
+    try_delete(CANONICAL_TEMP_DIR)
     return # TODO: the rest of this
 
     # check separate cache dirs are used
@@ -1000,11 +975,13 @@ fi
   def test_wasm_backend_builds(self):
     # we can build a program using the wasm backend, rebuilding binaryen etc. as needed
     restore_and_set_up()
+
     def check():
       print(self.do([PYTHON, EMCC, '--clear-cache']))
       print(self.do([PYTHON, EMCC, '--clear-ports']))
       with env_modify({'EMCC_WASM_BACKEND': '1'}):
         self.check_working([EMCC, path_from_root('tests', 'hello_world.c')], '')
+
     print('normally')
     check()
     print('with no BINARYEN_ROOT')
@@ -1050,9 +1027,9 @@ BINARYEN_ROOT = ''
 
       print('build using embuilder')
       prep()
-      subprocess.check_call([PYTHON, EMBUILDER, 'build', 'binaryen'])
+      run_process([PYTHON, EMBUILDER, 'build', 'binaryen'])
       assert os.path.exists(tag_file)
-      subprocess.check_call([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
+      run_process([PYTHON, EMCC] + MINIMAL_HELLO_WORLD + ['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"'])
       self.assertContained('hello, world!', run_js('a.out.js'))
 
       print('see we show an error for emmake (we cannot build natively under emmake)')
@@ -1078,10 +1055,9 @@ BINARYEN_ROOT = ''
             # EM_ASM doesn't work in a wasm side module, build a normal program
             cmd += [path_from_root('tests', 'hello_world.c'), '-s', 'SIDE_MODULE=1']
           cmd += ['-s', 'BINARYEN=1', '-s', 'BINARYEN_METHOD="interpret-binary"']
-          subprocess.check_call(cmd)
+          run_process(cmd)
           assert os.path.exists(tag_file)
           assert os.path.exists('a.out.wasm')
           if not side_module:
             assert os.path.exists('a.out.js')
             self.assertContained('hello, world!', run_js('a.out.js'))
-
